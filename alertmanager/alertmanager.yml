@@ -1,0 +1,22 @@
+global:
+  resolve_timeout: 5m
+
+templates:
+  - 'slack_template.tmpl'
+
+receivers:
+- name: 'slack-notifications'
+  slack_configs:
+  - channel: '#DevOps-Alerts'
+    send_resolved: true
+    username: 'Prometheus'
+    icon_emoji: ':alert:'                            ## to get our Slack webhook URL we are goint to have to creae our own slack app, 
+    api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'      ## https://api.slack.com/messaging/webhooks
+    title: '{{ template "slack.title" . }}'
+    text: '{{ template "slack.text" . }}'
+
+route:
+  receiver: 'slack-notifications'
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 3h

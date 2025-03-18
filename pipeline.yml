@@ -1,0 +1,42 @@
+- name: Push DORA Metrics to Pushgateway
+  env:
+    PUSHGATEWAY_URL: http://your-server-ip:9091  # Replace with your IP/domain
+    JOB_NAME: CI_fe_dev
+    ENV: dev
+    SERVICE: fe
+    TYPE: CI
+  run: |
+    START_TIME=$(date +%s)
+
+    # >>>>> Actual Job Starts >>>>>
+    # ./deploy.sh || exit 1
+    # <<<<< Actual Job Ends <<<<<
+
+    JOB_EXIT_CODE=$?
+    END_TIME=$(date +%s)
+    DURATION=$((END_TIME - START_TIME))
+
+    # Determine success
+    if [ $JOB_EXIT_CODE -eq 0 ]; then
+      SUCCESS=1
+      # Deployment Frequency (DF)
+      echo "github_actions_deployments_total{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} 1" | \
+        curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+    else
+      SUCCESS=0
+      # Change Failure Rate (CFR)
+      echo "github_failed_deployments_total{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} 1" | \
+        curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+    fi
+
+    # Lead Time for Changes (LTC)
+    echo "github_commit_to_deploy_seconds{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} ${DURATION}" | \
+      curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+
+    # Mean Time to Restore (MTTR)
+    if [ "$TYPE" = "restore" ]; then
+      echo "github_incident_recovery_seconds{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} ${DURATION}" | \
+        curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+    fi
+
+    exit $JOB_EXIT_CODE

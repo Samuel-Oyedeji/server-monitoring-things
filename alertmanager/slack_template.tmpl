@@ -1,0 +1,17 @@
+{{ define "slack.title" }}
+{{ if eq .Status "firing" }}
+:rotating_light: *ALERT:* {{ .CommonAnnotations.summary }}
+{{ else }}
+:white_check_mark: *RESOLVED:* {{ .CommonAnnotations.summary }}
+{{ end }}
+{{ end }}
+
+{{ define "slack.text" }}
+{{ if eq .Status "firing" }}
+*Description:* {{ .CommonAnnotations.description }}
+*Severity:* {{ .CommonLabels.severity }}
+*Time:* {{ .StartsAt | time }}
+{{ else }}
+*Recovered At:* {{ .EndsAt | time }}
+{{ end }}
+{{ end }}

@@ -1,0 +1,38 @@
+groups:
+- name: system_alerts
+  rules:
+  - alert: HighCPUUsage
+    expr: 100 - (avg by(instance)(rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 80
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: "High CPU usage on {{ $labels.instance }}"
+      description: "CPU usage is above 80%"
+
+  - alert: HighMemoryUsage
+    expr: (node_memory_Active_bytes / node_memory_MemTotal_bytes) * 100 > 80
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: "High Memory usage on {{ $labels.instance }}"
+      description: "Memory usage is above 80%"
+
+  - alert: ServerDown
+    expr: probe_success == 0
+    for: 1m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Server Down: {{ $labels.instance }}"
+      description: "Blackbox Exporter cannot reach server."
+
+  - alert: SSLCertificateExpiringSoon
+  expr: probe_ssl_earliest_cert_expiry - time() < 864000  # 10 days
+  for: 5m
+  labels:
+    severity: warning
+  annotations:
+    summary: "SSL cert for {{ $labels.instance }} expires in less than 10 days"
+    description: "SSL cert is expiring soon. Renew it ASAP."

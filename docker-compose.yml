@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    ports:
+      - "3020:3000"  # Changed port to 3020
+    volumes:
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter
+    container_name: node-exporter
+    ports:
+      - "9100:9100"
+    restart: unless-stopped
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter
+    container_name: blackbox-exporter
+    ports:
+      - "9115:9115"
+    volumes:
+      - ./blackbox/blackbox.yml:/etc/blackbox_exporter/config.yml
+    command:
+      - '--config.file=/etc/blackbox_exporter/config.yml'
+    restart: unless-stopped
+
+  pushgateway:
+    image: prom/pushgateway
+    container_name: pushgateway
+    ports:
+      - "9091:9091"
+    restart: unless-stopped
+
+volumes:
+  grafana-data:
