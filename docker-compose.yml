@@ -20,6 +20,8 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
     restart: unless-stopped
+    environment:
+      - GF_SERVER_ROOT_URL=https://techie.love/grafana/
 
   node-exporter:
     image: prom/node-exporter
