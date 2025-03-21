@@ -1,0 +1,136 @@
+name: CI Pipeline
+
+on:
+  pull_request:
+    branches:
+      - dev
+  workflow_dispatch:
+
+jobs:
+  test-and-build:
+    runs-on: techiesmatch
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Run CI with DORA Metrics Push
+        env:
+          PUSHGATEWAY_URL: http://18.171.107.108:9091
+          JOB_NAME: CI_BE_DEV
+          ENV: DEV
+          SERVICE: BE
+          TYPE: CI
+        run: |
+          START_TIME=$(date +%s)
+
+          # >>>>> Actual Job Starts >>>>>
+
+          # Create and activate virtual environment
+          python3 -m venv venv
+          source venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+          # Generate dynamic port
+          FREE_PORT=$(python -c '
+          import socket
+          for port in range(8000, 9000):
+              try:
+                  s = socket.socket()
+                  s.bind(("", port))
+                  s.close()
+                  print(port)
+                  break
+              except:
+                  pass
+          ')
+          export PORT=$FREE_PORT
+          echo "Using port: $PORT"
+
+          # Modify env file
+          cp .env-test .env
+          if grep -q "PORT=" .env; then
+            sed -i "s/PORT=.*/PORT=$PORT/" .env
+          else
+            echo "PORT=$PORT" >> .env
+          fi
+
+          if grep -q "DB_URL=" .env; then
+            sed -i "s|DB_URL=.*|DB_URL=${{ secrets.DB_TEST_URL }}|" .env
+          else
+            echo "DB_URL=${{ secrets.DB_TEST_URL }}" >> .env
+          fi
+
+          # Cleanup previous processes
+          pkill -f "python3 main.py" || true
+          sleep 5
+
+          # - name: Test DB migrations
+          #   run: |
+          #     source venv/bin/activate
+          #     if [ $(alembic heads | wc -l) -gt 1 ]; then
+          #         echo "Multiple Alembic heads detected. Merging heads..."
+          #         alembic merge heads -m "merge heads for deployment"
+          #     fi  
+          #     alembic upgrade head
+
+          # Run app for testing
+          source venv/bin/activate
+          PORT=$PORT python3 main.py &
+          pid=$!
+          sleep 5
+          
+          if ps -p $pid > /dev/null; then
+            echo "main.py started successfully on port $PORT"
+            kill $pid
+          else
+            echo "main.py failed to start on port $PORT"
+            echo "Checking application logs:"
+            cat app.log || true
+            exit 1
+          fi
+
+          # Linting and formatting
+          source venv/bin/activate
+          PORT=$PORT PYTHONPATH=. ruff check
+
+          # Run tests
+          source venv/bin/activate
+          PORT=$PORT PYTHONPATH=. pytest
+          
+          # <<<<< Actual Job Ends <<<<<
+
+          JOB_EXIT_CODE=$?
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - START_TIME))
+
+          # Determine success
+          if [ $JOB_EXIT_CODE -eq 0 ]; then
+            SUCCESS=1
+            # Deployment Frequency (DF)
+            echo "github_actions_deployments_total{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} 1" | \
+              curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+          else
+            SUCCESS=0
+            # Change Failure Rate (CFR)
+            echo "github_failed_deployments_total{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} 1" | \
+              curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+          fi
+
+          # Lead Time for Changes (LTC)
+          echo "github_commit_to_deploy_seconds{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} ${DURATION}" | \
+            curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+
+          # Mean Time to Restore (MTTR)
+          if [ "$TYPE" = "restore" ]; then
+            echo "github_incident_recovery_seconds{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} ${DURATION}" | \
+              curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+          fi
+
+          exit $JOB_EXIT_CODE

@@ -1,0 +1,130 @@
+name: CD PROD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "README.md"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: techiesmatch
+    steps:
+      - name: Deploy & Push DORA Metrics to Pushgateway
+        shell: bash
+        env:
+          PUSHGATEWAY_URL: http://18.171.107.108:9091 
+          JOB_NAME: CD_BE_PROD
+          ENV: PROD
+          SERVICE: BE
+          TYPE: CD
+        run: |
+          START_TIME=$(date +%s)
+
+          # >>>>> Actual Job Starts >>>>>
+          
+
+          # SSH into server using password and deploy
+          DEPLOY_RESULT=0
+          sshpass -p "${{ secrets.SERVER_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF' || DEPLOY_RESULT=$?
+          set -e  # Stop script on error
+          set -x  # Enable debugging
+          
+          echo "Starting deployment process..."
+          
+          # Navigate to deployment directory
+          cd $HOME/be/main || { echo "Directory be/main not found"; exit 1; }
+          
+          # Backing up static files safely
+          if [ -d "./static" ]; then
+              echo "Backing up static files..."
+              mkdir -p /tmp/static_prod_backup
+              cp -r ./static/* /tmp/static_prod_backup/ 2>/dev/null || true  # Continue even if empty
+          fi
+          
+          # Pull latest code from repository
+          echo "Pulling latest changes..."
+          git fetch origin
+          git checkout main || { echo "Failed to checkout main branch"; exit 1; }
+          git pull origin main || { echo "Failed to pull latest changes"; exit 1; }
+          
+          # Restoring static files safely
+          if [ -d "/tmp/static_backup" ]; then
+              echo "Restoring static files..."
+              mkdir -p ./static
+              cp -r /tmp/static_prod_backup/* ./static/ 2>/dev/null || true  # Continue even if empty
+          fi
+          
+          # Set up and activate virtual environment
+          echo "Setting up virtual environment..."
+          python3 -m venv venv || { echo "Failed to create virtual environment"; exit 1; }
+          source venv/bin/activate || { echo "Failed to activate virtual environment"; exit 1; }
+          
+          # Install dependencies
+          echo "Installing dependencies..."
+          pip install --upgrade pip || { echo "Failed to upgrade pip"; exit 1; }
+          pip install -r requirements.txt || { echo "Failed to install dependencies"; exit 1; }
+          
+          # Check for multiple Alembic heads and merge them if necessary
+          echo "Checking Alembic migrations..."
+          alembic_heads=$(alembic heads | grep -v '^$' | wc -l)
+          if [ "$alembic_heads" -gt 1 ]; then
+              echo "Multiple Alembic heads detected. Merging heads..."
+              alembic merge heads -m "merge heads for deployment" || { echo "Failed to merge Alembic heads"; exit 1; }
+          fi
+          
+          # Run Alembic migrations
+          echo "Running database migrations..."
+          alembic upgrade head || { echo "Failed to run Alembic migrations"; exit 1; }
+          
+          # Restart application with PM2
+          echo "Restarting application..."
+          pm2 restart app_prod --update-env || { echo "Failed to restart app with PM2"; exit 1; }
+          
+          # Clean up - don't allow this to fail the script
+          echo "Cleaning up..."
+          deactivate || true
+          
+          # Explicitly set successful exit
+          echo "Deployment completed successfully"
+          true  # Ensure last command has exit code 0
+          EOF
+
+          # Check the deployment result
+          if [ $DEPLOY_RESULT -eq 0 ]; then
+            echo "Deployment completed successfully"
+            exit 0
+          else
+            echo "Deployment failed with exit code $DEPLOY_RESULT"
+            exit 1
+          fi
+
+
+          # <<<<< Actual Job Ends <<<<<
+
+          JOB_EXIT_CODE=$?
+          END_TIME=$(date +%s)
+          DURATION=$((END_TIME - START_TIME))
+
+          if [ $JOB_EXIT_CODE -eq 0 ]; then
+            echo "Job succeeded, pushing deployment metric..."
+            echo "github_actions_deployments_total{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} 1" | \
+              curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+          else
+            echo "Job failed, pushing failure metric..."
+            echo "github_failed_deployments_total{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} 1" | \
+              curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+          fi
+
+          echo "Pushing commit-to-deploy duration metric..."
+          echo "github_commit_to_deploy_seconds{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} ${DURATION}" | \
+            curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+
+          echo "Pushing MTTR metric..."
+          echo "github_incident_recovery_seconds{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} ${DURATION}" | \
+            curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+
+          exit $JOB_EXIT_CODE

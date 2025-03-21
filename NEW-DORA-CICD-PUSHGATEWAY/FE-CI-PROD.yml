@@ -1,0 +1,77 @@
+name: CI-Pipeline-PROD
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: techiesmatch
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '20.13.1'
+
+    - name: Install pnpm
+      run: npm install -g pnpm
+
+    - name: Set up pnpm caching
+      uses: actions/setup-node@v3
+      with:
+        node-version: '20.13.1'
+        cache: 'pnpm'
+
+    - name: Push DORA Metrics to Pushgateway with CI Workflow
+      env:
+        PUSHGATEWAY_URL: http://18.171.107.108:9091 
+        JOB_NAME: CI_FE_PROD
+        ENV: PROD
+        SERVICE: FE
+        TYPE: CI
+      run: |
+        START_TIME=$(date +%s)
+
+        # >>>>> Actual Job Starts >>>>>
+
+        pnpm install
+        pnpm run lint || true  # Continue even if lint fails
+        pnpm run build
+        
+        # <<<<< Actual Job Ends <<<<<
+
+        JOB_EXIT_CODE=$?
+        END_TIME=$(date +%s)
+        DURATION=$((END_TIME - START_TIME))
+
+        # Determine success
+        if [ $JOB_EXIT_CODE -eq 0 ]; then
+          SUCCESS=1
+          # Deployment Frequency (DF)
+          echo "github_actions_deployments_total{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} 1" | \
+            curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+        else
+          SUCCESS=0
+          # Change Failure Rate (CFR)
+          echo "github_failed_deployments_total{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} 1" | \
+            curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+        fi
+
+        # Lead Time for Changes (LTC)
+        echo "github_commit_to_deploy_seconds{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} ${DURATION}" | \
+          curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+
+        # Mean Time to Restore (MTTR)
+        echo "Pushing MTTR metric..."
+        echo "github_incident_recovery_seconds{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} ${DURATION}" | \
+        curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+
+        exit $JOB_EXIT_CODE

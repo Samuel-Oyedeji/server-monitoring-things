@@ -1,0 +1,78 @@
+name: CD-PIPELINE-PROD
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: techiesmatch
+
+    steps:
+    - name: Deploy and Push Metrics
+      env:
+        PUSHGATEWAY_URL: http://18.171.107.108:9091 
+        JOB_NAME: CD_FE_PROD
+        ENV: PROD
+        SERVICE: FE
+        TYPE: CD
+      run: |
+        START_TIME=$(date +%s)
+
+        # >>>>> Actual Job Starts >>>>>
+        
+        sshpass -p "${{ secrets.SERVER_PASSWORD }}" ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
+        set -e
+        set -x
+
+        # Navigate to the project directory
+        cd fe/prod
+
+        # Ensure the correct branch is checked out and updated
+        git checkout main 
+        git reset --hard HEAD
+        git clean -fd
+        git pull origin main
+
+        # Install dependencies
+        pnpm install 
+
+        # Export environment variables
+        export NEXT_PUBLIC_BACKEND_URL="${{ secrets.NEXT_PUBLIC_BACKEND_URL_PROD }}"
+        export NEXT_PUBLIC_PHOTO_URL="${{ secrets.NEXT_PUBLIC_PHOTO_URL_PROD }}"
+        export NEXT_PUBLIC_WS_URL="${{ secrets.NEXT_PUBLIC_WS_URL_PROD }}"
+
+        # Build the project
+        pnpm run build
+
+        # Restart the application using PM2
+        pm2 restart techiesmatch-prod || pm2 start "pnpm run start" --name "techiesmatch-prod"
+      
+
+        EOF
+
+        # <<<<< Actual Job Ends <<<<<
+
+        JOB_EXIT_CODE=$?
+        END_TIME=$(date +%s)
+        DURATION=$((END_TIME - START_TIME))
+
+        if [ $JOB_EXIT_CODE -eq 0 ]; then
+          SUCCESS=1
+          echo "github_actions_deployments_total{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} 1" | \
+            curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+        else
+          SUCCESS=0
+          echo "github_failed_deployments_total{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} 1" | \
+            curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+        fi
+
+        echo "github_commit_to_deploy_seconds{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} ${DURATION}" | \
+          curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+
+        echo "Pushing MTTR metric..."
+        echo "github_incident_recovery_seconds{env=\"$ENV\",service=\"$SERVICE\",type=\"$TYPE\"} ${DURATION}" | \
+          curl --data-binary @- $PUSHGATEWAY_URL/metrics/job/$JOB_NAME
+
+        exit $JOB_EXIT_CODE
